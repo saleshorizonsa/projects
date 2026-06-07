@@ -3,6 +3,8 @@ import type { NextAuthConfig } from "next-auth";
 // Edge-safe config (no DB / bcrypt) — shared by the middleware and the full
 // auth instance. The Credentials provider (which uses Prisma) is added in auth.ts.
 export const authConfig = {
+  // Trust the deployment host header (required off-Vercel, e.g. Hostinger/LiteSpeed).
+  trustHost: true,
   pages: { signIn: "/login" },
   session: { strategy: "jwt" },
   providers: [],
