@@ -12,6 +12,9 @@ import {
   clampScore,
   GAP_STATUSES,
   impactForSeverity,
+  isCostCadence,
+  isRequirementStatus,
+  isRequirementType,
   isWorkStatus,
   PROJECT_STATUSES,
   SEVERITIES,
@@ -568,4 +571,57 @@ export async function updateWorkStatus(
   }
   revalidatePath(`/projects/${projectId}/gaps/${gapId}`);
   revalidatePath("/people");
+}
+
+// ----------------------------------------- Requirements (Input — Phase 5+)
+
+export async function addRequirement(formData: FormData) {
+  const gapId = str(formData, "gapId");
+  const projectId = str(formData, "projectId");
+  const name = str(formData, "name");
+  if (!gapId || !projectId || !name) return;
+  if (!(await assertProjectEdit(projectId))) return;
+
+  const type = str(formData, "type");
+  const costCadence = str(formData, "costCadence");
+  const costRaw = str(formData, "cost");
+  const cost = costRaw ? Number(costRaw) : null;
+  const actionId = str(formData, "actionId");
+
+  await prisma.requirement.create({
+    data: {
+      gapId,
+      actionId: actionId || null,
+      type: isRequirementType(type) ? type : "other",
+      name,
+      description: str(formData, "description") || null,
+      cost: cost !== null && !Number.isNaN(cost) ? cost : null,
+      costCadence: isCostCadence(costCadence) ? costCadence : "one_time",
+      vendor: str(formData, "vendor") || null,
+      url: str(formData, "url") || null,
+    },
+  });
+  revalidatePath(`/projects/${projectId}/gaps/${gapId}`);
+}
+
+export async function updateRequirementStatus(
+  reqId: string,
+  projectId: string,
+  gapId: string,
+  status: string
+) {
+  if (!reqId || !isRequirementStatus(status)) return;
+  if (!(await assertProjectEdit(projectId))) return;
+  await prisma.requirement.update({ where: { id: reqId }, data: { status } });
+  revalidatePath(`/projects/${projectId}/gaps/${gapId}`);
+}
+
+export async function deleteRequirement(formData: FormData) {
+  const id = str(formData, "id");
+  const projectId = str(formData, "projectId");
+  const gapId = str(formData, "gapId");
+  if (!id) return;
+  if (!(await assertProjectEdit(projectId))) return;
+  await prisma.requirement.delete({ where: { id } });
+  revalidatePath(`/projects/${projectId}/gaps/${gapId}`);
 }

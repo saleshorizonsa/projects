@@ -71,6 +71,47 @@ export function impactForSeverity(severity: string): number {
   return 2;
 }
 
+// Requirements (Input — resources/procurement needed to close a gap).
+export const REQUIREMENT_TYPES = [
+  "budget",
+  "subscription",
+  "license",
+  "tool",
+  "hardware",
+  "headcount",
+  "training",
+  "vendor",
+  "other",
+] as const;
+export type RequirementType = (typeof REQUIREMENT_TYPES)[number];
+
+export const COST_CADENCES = ["one_time", "monthly", "annual"] as const;
+export type CostCadence = (typeof COST_CADENCES)[number];
+export const COST_CADENCE_LABELS: Record<CostCadence, string> = {
+  one_time: "one-time",
+  monthly: "/mo",
+  annual: "/yr",
+};
+
+export const REQUIREMENT_STATUSES = [
+  "identified",
+  "requested",
+  "approved",
+  "acquired",
+  "rejected",
+] as const;
+export type RequirementStatus = (typeof REQUIREMENT_STATUSES)[number];
+
+export function isRequirementType(v: string): v is RequirementType {
+  return (REQUIREMENT_TYPES as readonly string[]).includes(v);
+}
+export function isCostCadence(v: string): v is CostCadence {
+  return (COST_CADENCES as readonly string[]).includes(v);
+}
+export function isRequirementStatus(v: string): v is RequirementStatus {
+  return (REQUIREMENT_STATUSES as readonly string[]).includes(v);
+}
+
 // Clamp a 1-5 score coming from form input.
 export function clampScore(value: number): number {
   if (Number.isNaN(value)) return SCORE_MIN;

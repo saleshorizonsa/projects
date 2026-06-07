@@ -4,14 +4,24 @@ import { prisma } from "@/lib/prisma";
 import { getOrCreateCurrentAssessment } from "@/lib/gaps";
 import {
   addAction,
+  addRequirement,
   addTask,
   deleteAction,
+  deleteRequirement,
   deleteTask,
   updateGapPriority,
 } from "@/app/actions";
-import { SCORE_MAX, SCORE_MIN } from "@/lib/constants";
+import {
+  COST_CADENCE_LABELS,
+  COST_CADENCES,
+  REQUIREMENT_TYPES,
+  SCORE_MAX,
+  SCORE_MIN,
+  type CostCadence,
+} from "@/lib/constants";
 import { requireProjectRole, requireUser } from "@/lib/access";
 import { GapStatusSelect } from "@/components/gap-status-select";
+import { RequirementStatusSelect } from "@/components/requirement-status-select";
 import { WorkStatusSelect } from "@/components/work-status-select";
 import { SubmitButton } from "@/components/submit-button";
 import { Badge } from "@/components/ui/badge";
@@ -61,9 +71,26 @@ export default async function GapDetailPage({
           },
         },
       },
+      requirements: {
+        orderBy: { createdAt: "asc" },
+        include: { action: { select: { title: true } } },
+      },
     },
   });
   if (!gap || gap.projectId !== id) notFound();
+
+  // Cost roll-up across this gap's requirements (excluding rejected).
+  const costByCadence = { one_time: 0, monthly: 0, annual: 0 } as Record<
+    CostCadence,
+    number
+  >;
+  for (const r of gap.requirements) {
+    if (r.status === "rejected" || r.cost == null) continue;
+    const cad = (r.costCadence as CostCadence) ?? "one_time";
+    if (cad in costByCadence) costByCadence[cad] += r.cost;
+  }
+  const fmtCost = (n: number) =>
+    n.toLocaleString(undefined, { maximumFractionDigits: 2 });
 
   const [people, teams, assessment, audits] = await Promise.all([
     prisma.person.findMany({ orderBy: { name: "asc" } }),
@@ -368,6 +395,163 @@ export default async function GapDetailPage({
               <Input id="action-desc" name="description" placeholder="Optional" />
             </div>
             <SubmitButton variant="outline">Add action</SubmitButton>
+          </form>
+        </CardContent>
+      </Card>
+
+      {/* Requirements — Input (resources/procurement needed to close the gap) */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Requirements</CardTitle>
+          <CardDescription>
+            Inputs needed to close this gap — budget, licenses, headcount, tools,
+            vendors. Track each from identified → requested → approved → acquired.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          {gap.requirements.length > 0 ? (
+            <>
+              <ul className="flex flex-col gap-2">
+                {gap.requirements.map((r) => (
+                  <li
+                    key={r.id}
+                    className="flex flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2 text-sm"
+                  >
+                    <div className="flex flex-1 flex-col">
+                      <div className="flex items-center gap-2">
+                        <Badge variant="outline">{r.type}</Badge>
+                        <span className="font-medium">{r.name}</span>
+                      </div>
+                      <span className="text-xs text-muted-foreground">
+                        {r.cost != null && (
+                          <>
+                            ${fmtCost(r.cost)} {COST_CADENCE_LABELS[r.costCadence as CostCadence] ?? r.costCadence}
+                          </>
+                        )}
+                        {r.vendor && <> · {r.vendor}</>}
+                        {r.action?.title && <> · for: {r.action.title}</>}
+                        {r.url && (
+                          <>
+                            {" · "}
+                            <a href={r.url} target="_blank" rel="noopener noreferrer" className="underline">
+                              link
+                            </a>
+                          </>
+                        )}
+                        {r.description && <div>{r.description}</div>}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <RequirementStatusSelect
+                        reqId={r.id}
+                        projectId={id}
+                        gapId={gap.id}
+                        status={r.status}
+                      />
+                      <form action={deleteRequirement}>
+                        <input type="hidden" name="id" value={r.id} />
+                        <input type="hidden" name="projectId" value={id} />
+                        <input type="hidden" name="gapId" value={gap.id} />
+                        <SubmitButton variant="ghost" size="xs">
+                          ✕
+                        </SubmitButton>
+                      </form>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+              <p className="text-sm text-muted-foreground">
+                Estimated cost (excl. rejected):{" "}
+                <span className="font-medium text-foreground">
+                  ${fmtCost(costByCadence.one_time)} one-time
+                </span>
+                {" · "}${fmtCost(costByCadence.monthly)}/mo{" · "}$
+                {fmtCost(costByCadence.annual)}/yr
+              </p>
+            </>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              No requirements yet. Add what you need to acquire to close this gap.
+            </p>
+          )}
+
+          {/* Add requirement */}
+          <form
+            action={addRequirement}
+            className="flex flex-col gap-2 border-t pt-4"
+          >
+            <input type="hidden" name="gapId" value={gap.id} />
+            <input type="hidden" name="projectId" value={id} />
+            <div className="flex flex-wrap items-end gap-2">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="req-type">Type</Label>
+                <NativeSelect id="req-type" name="type" defaultValue="budget">
+                  {REQUIREMENT_TYPES.map((t) => (
+                    <option key={t} value={t}>
+                      {t}
+                    </option>
+                  ))}
+                </NativeSelect>
+              </div>
+              <div className="flex flex-[2] flex-col gap-1.5">
+                <Label htmlFor="req-name">Name</Label>
+                <Input
+                  id="req-name"
+                  name="name"
+                  required
+                  placeholder="e.g. HubSpot Marketing Pro seat"
+                />
+              </div>
+              <div className="flex w-28 flex-col gap-1.5">
+                <Label htmlFor="req-cost">Cost</Label>
+                <Input
+                  id="req-cost"
+                  name="cost"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  placeholder="0"
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="req-cadence">Cadence</Label>
+                <NativeSelect id="req-cadence" name="costCadence" defaultValue="monthly">
+                  {COST_CADENCES.map((c) => (
+                    <option key={c} value={c}>
+                      {c.replace("_", "-")}
+                    </option>
+                  ))}
+                </NativeSelect>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-end gap-2">
+              <div className="flex flex-1 flex-col gap-1.5">
+                <Label htmlFor="req-desc">Description</Label>
+                <Input id="req-desc" name="description" placeholder="Optional" />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="req-vendor">Vendor</Label>
+                <Input id="req-vendor" name="vendor" placeholder="Optional" />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="req-url">URL</Label>
+                <Input id="req-url" name="url" placeholder="Optional" />
+              </div>
+              {gap.actions.length > 0 && (
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="req-action">For action</Label>
+                  <NativeSelect id="req-action" name="actionId" defaultValue="">
+                    <option value="">— none —</option>
+                    {gap.actions.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.title}
+                      </option>
+                    ))}
+                  </NativeSelect>
+                </div>
+              )}
+              <SubmitButton variant="outline">Add requirement</SubmitButton>
+            </div>
           </form>
         </CardContent>
       </Card>

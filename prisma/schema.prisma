@@ -113,11 +113,12 @@ model Gap {
   // identified -> prioritized -> planned -> in_progress -> resolved -> verified
   status              String  @default("identified")
 
-  project     Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  capability  Capability?  @relation(fields: [capabilityId], references: [id], onDelete: Cascade)
-  achievement Achievement?
-  actions     Action[]
-  audits      GapAudit[]
+  project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  capability   Capability?   @relation(fields: [capabilityId], references: [id], onDelete: Cascade)
+  achievement  Achievement?
+  actions      Action[]
+  audits       GapAudit[]
+  requirements Requirement[]
 
   // One gap per capability per project per source. AI gaps keep capabilityId
   // null (multiple NULLs are allowed in a unique index, so they never collide).
@@ -148,10 +149,36 @@ model Action {
   description String? @db.Text
   status      String  @default("todo") // todo | in_progress | done
 
-  gap   Gap    @relation(fields: [gapId], references: [id], onDelete: Cascade)
-  tasks Task[]
+  gap          Gap           @relation(fields: [gapId], references: [id], onDelete: Cascade)
+  tasks        Task[]
+  requirements Requirement[]
 
   @@index([gapId])
+}
+
+// Input — a resource/procurement item needed to close a gap (budget, license,
+// headcount, tool, vendor, …). Optionally tied to a specific Action.
+model Requirement {
+  id          String   @id @default(cuid())
+  gapId       String
+  actionId    String?
+  // budget | subscription | license | tool | hardware | headcount | training | vendor | other
+  type        String   @default("other")
+  name        String
+  description String?
+  cost        Float? // amount; null if unknown/not applicable
+  costCadence String   @default("one_time") // one_time | monthly | annual
+  // identified | requested | approved | acquired | rejected
+  status      String   @default("identified")
+  vendor      String?
+  url         String?
+  createdAt   DateTime @default(now())
+
+  gap    Gap     @relation(fields: [gapId], references: [id], onDelete: Cascade)
+  action Action? @relation(fields: [actionId], references: [id], onDelete: SetNull)
+
+  @@index([gapId])
+  @@index([actionId])
 }
 
 // Processes — an assignable unit of work under an Action. May be assigned to a
