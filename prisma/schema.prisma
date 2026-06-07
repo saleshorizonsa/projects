@@ -1,0 +1,275 @@
+// GapFlow — Phase 1-5 data model (subset of SPEC.md section 3 + auth).
+// Phase 5 adds multi-user auth: a User table (email+password), per-project
+// sharing with users and teams (roles owner/editor/viewer), and a GapAudit
+// trail of status changes. Projects are owned by a User and scoped accordingly.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// A project being driven through the gap-analysis loop.
+model Project {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  status      String   @default("active") // active | on_hold | done | archived
+  ownerId     String? // owning User (backfilled in Phase 5; set from session on create)
+  createdAt   DateTime @default(now())
+
+  owner        User?              @relation("OwnedProjects", fields: [ownerId], references: [id])
+  goals        Goal[]
+  capabilities Capability[]
+  assessments  Assessment[]
+  gaps         Gap[]
+  achievements Achievement[]
+  members      ProjectMember[]
+  teamShares   ProjectTeamShare[]
+
+  @@index([ownerId])
+}
+
+// Define / Output — the target state the project is aiming for.
+model Goal {
+  id          String    @id @default(cuid())
+  projectId   String
+  title       String
+  description String?
+  targetDate  DateTime?
+  status      String    @default("open") // open | done
+
+  project     Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+}
+
+// A dimension the project is scored against (e.g. "Lead capture").
+model Capability {
+  id             String  @id @default(cuid())
+  projectId      String
+  name           String
+  businessWeight Int     @default(3) // 1-5: how much this capability matters
+
+  project Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  scores  CapabilityScore[]
+  gaps    Gap[]
+
+  @@index([projectId])
+}
+
+// Feedback — a dated snapshot of current state. Phase 2 keeps multiple dated
+// snapshots per project (the latest is the editable "current" one), enabling
+// the gap burndown over time.
+model Assessment {
+  id        String   @id @default(cuid())
+  projectId String
+  takenAt   DateTime @default(now())
+  note      String?
+  source    String   @default("manual") // manual | ai
+
+  project Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  scores  CapabilityScore[]
+
+  @@index([projectId])
+}
+
+// The current/target maturity (1-5) for one capability within an assessment.
+model CapabilityScore {
+  id           String @id @default(cuid())
+  assessmentId String
+  capabilityId String
+  currentScore Int // 1-5
+  targetScore  Int // 1-5
+
+  assessment Assessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  capability Capability @relation(fields: [capabilityId], references: [id], onDelete: Cascade)
+
+  // One score per capability per assessment.
+  @@unique([assessmentId, capabilityId])
+  @@index([capabilityId])
+}
+
+// The error signal. Two complementary origins (SPEC section 2):
+//  - source "score": AUTO-COMPUTED from CapabilityScores (deterministic, the
+//    source of truth). One row per capability with a positive gap.
+//  - source "ai": proposed by Claude from free-text state, confirmed by a human.
+//    Stored with a suggestedCapability label and capabilityId left null.
+model Gap {
+  id                  String  @id @default(cuid())
+  projectId           String
+  capabilityId        String?
+  sourceAssessmentId  String?
+  source              String  @default("score") // score | ai
+  suggestedCapability String? // AI's suggested capability name (source = "ai")
+  title               String
+  description         String?
+  severity            String  @default("medium") // low | medium | high
+  impact              Int     @default(3) // 1-5
+  effort              Int     @default(3) // 1-5
+  // identified -> prioritized -> planned -> in_progress -> resolved -> verified
+  status              String  @default("identified")
+
+  project     Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  capability  Capability?  @relation(fields: [capabilityId], references: [id], onDelete: Cascade)
+  achievement Achievement?
+  actions     Action[]
+  audits      GapAudit[]
+
+  // One gap per capability per project per source. AI gaps keep capabilityId
+  // null (NULLs are distinct in a Postgres unique index, so they never collide).
+  @@unique([projectId, capabilityId, source])
+  @@index([projectId])
+}
+
+// Auto-logged when a gap reaches 'verified' — the record that the loop worked.
+// Created automatically by the app, never via a manual entry screen.
+model Achievement {
+  id         String   @id @default(cuid())
+  projectId  String
+  gapId      String   @unique // one achievement per gap (idempotent)
+  title      String
+  achievedAt DateTime @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  gap     Gap     @relation(fields: [gapId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+}
+
+// Plan / Input — an initiative that will close a gap.
+model Action {
+  id          String  @id @default(cuid())
+  gapId       String
+  title       String
+  description String?
+  status      String  @default("todo") // todo | in_progress | done
+
+  gap   Gap    @relation(fields: [gapId], references: [id], onDelete: Cascade)
+  tasks Task[]
+
+  @@index([gapId])
+}
+
+// Processes — an assignable unit of work under an Action. May be assigned to a
+// Person and/or a Team, with an optional due date.
+model Task {
+  id         String    @id @default(cuid())
+  actionId   String
+  title      String
+  status     String    @default("todo") // todo | in_progress | done
+  assigneeId String?
+  teamId     String?
+  dueDate    DateTime?
+
+  action   Action  @relation(fields: [actionId], references: [id], onDelete: Cascade)
+  assignee Person? @relation(fields: [assigneeId], references: [id], onDelete: SetNull)
+  team     Team?   @relation(fields: [teamId], references: [id], onDelete: SetNull)
+
+  @@index([actionId])
+  @@index([assigneeId])
+  @@index([teamId])
+}
+
+// A directory person you assign work to. Optionally linked to an auth User
+// (matched by email) so team-based project sharing can resolve to real accounts.
+model Person {
+  id     String  @id @default(cuid())
+  name   String
+  email  String?
+  role   String?
+  userId String? @unique
+
+  user        User?            @relation(fields: [userId], references: [id], onDelete: SetNull)
+  memberships TeamMembership[]
+  tasks       Task[]
+}
+
+model Team {
+  id   String @id @default(cuid())
+  name String
+
+  memberships TeamMembership[]
+  tasks       Task[]
+  projectShares ProjectTeamShare[]
+}
+
+// Explicit join for Team <-> Person membership (SPEC: a Team has many Person).
+model TeamMembership {
+  id       String @id @default(cuid())
+  teamId   String
+  personId String
+
+  team   Team   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  person Person @relation(fields: [personId], references: [id], onDelete: Cascade)
+
+  @@unique([teamId, personId])
+  @@index([personId])
+}
+
+// ---------------------------------------------------------------- Auth (Phase 5)
+
+// An authenticated user. Email + bcrypt password (NextAuth Credentials, JWT
+// sessions). role: "admin" sees everything; "member" sees owned/shared projects.
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String?
+  passwordHash String
+  role         String   @default("member") // admin | member
+  createdAt    DateTime @default(now())
+
+  ownedProjects   Project[]       @relation("OwnedProjects")
+  projectMembers  ProjectMember[]
+  person          Person?
+  gapAudits       GapAudit[]
+}
+
+// Direct project share to a user, with a role.
+model ProjectMember {
+  id        String @id @default(cuid())
+  projectId String
+  userId    String
+  role      String @default("viewer") // editor | viewer
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+  @@index([userId])
+}
+
+// Project share to a team — members of the team gain access via their linked user.
+model ProjectTeamShare {
+  id        String @id @default(cuid())
+  projectId String
+  teamId    String
+  role      String @default("viewer") // editor | viewer
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  team    Team    @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, teamId])
+  @@index([teamId])
+}
+
+// Audit trail of gap status changes (Phase 5).
+model GapAudit {
+  id          String   @id @default(cuid())
+  gapId       String
+  projectId   String
+  fromStatus  String?
+  toStatus    String
+  changedById String?
+  changedByEmail String?
+  changedAt   DateTime @default(now())
+
+  gap  Gap   @relation(fields: [gapId], references: [id], onDelete: Cascade)
+  user User? @relation(fields: [changedById], references: [id], onDelete: SetNull)
+
+  @@index([gapId])
+  @@index([projectId])
+}
