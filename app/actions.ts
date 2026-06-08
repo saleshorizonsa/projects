@@ -690,8 +690,31 @@ export async function updateRequirementStatus(
 ) {
   if (!reqId || !isRequirementStatus(status)) return;
   if (!(await assertProjectEdit(projectId))) return;
-  await prisma.requirement.update({ where: { id: reqId }, data: { status } });
+  const req = await prisma.requirement.update({
+    where: { id: reqId },
+    data: { status },
+  });
+
+  // Reaching "acquired" auto-logs an Acquirement (idempotent — one per
+  // requirement); moving back out removes it. Mirror of Achievement on verify.
+  if (status === "acquired") {
+    await prisma.acquirement.upsert({
+      where: { requirementId: reqId },
+      create: {
+        requirementId: reqId,
+        projectId,
+        title: req.name,
+        cost: req.cost,
+      },
+      update: { title: req.name, cost: req.cost },
+    });
+  } else {
+    await prisma.acquirement.deleteMany({ where: { requirementId: reqId } });
+  }
+
   revalidatePath(`/projects/${projectId}/gaps/${gapId}`);
+  revalidatePath(`/projects/${projectId}/requirements`);
+  revalidatePath(`/projects/${projectId}`);
 }
 
 export async function deleteRequirement(formData: FormData) {

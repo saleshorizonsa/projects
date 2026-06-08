@@ -29,6 +29,7 @@ model Project {
   assessments  Assessment[]
   gaps         Gap[]
   achievements Achievement[]
+  acquirements Acquirement[]
   members      ProjectMember[]
   teamShares   ProjectTeamShare[]
 
@@ -203,11 +204,28 @@ model Requirement {
   url         String?
   createdAt   DateTime @default(now())
 
-  gap    Gap     @relation(fields: [gapId], references: [id], onDelete: Cascade)
-  action Action? @relation(fields: [actionId], references: [id], onDelete: SetNull)
+  gap         Gap          @relation(fields: [gapId], references: [id], onDelete: Cascade)
+  action      Action?      @relation(fields: [actionId], references: [id], onDelete: SetNull)
+  acquirement Acquirement?
 
   @@index([gapId])
   @@index([actionId])
+}
+
+// Auto-logged when a Requirement reaches 'acquired' — the resource-side mirror
+// of Achievement. Records resources gained; never hand-entered.
+model Acquirement {
+  id            String   @id @default(cuid())
+  projectId     String
+  requirementId String   @unique // one acquirement per requirement (idempotent)
+  title         String
+  acquiredAt    DateTime @default(now())
+  cost          Float? // cost at the time it was acquired
+
+  project     Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  requirement Requirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
 }
 
 // Processes — an assignable unit of work under an Action. May be assigned to a

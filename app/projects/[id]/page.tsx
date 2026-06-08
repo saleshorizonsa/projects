@@ -93,6 +93,10 @@ export default async function ProjectPage({
     where: { projectId: id },
     orderBy: { achievedAt: "desc" },
   });
+  const acquirements = await prisma.acquirement.findMany({
+    where: { projectId: id },
+    orderBy: { acquiredAt: "desc" },
+  });
   const goals = await getGoalsWithProgress(id);
   const regressions = await getRegressions(id);
   // All gaps for this project (for linking to goals).
@@ -165,6 +169,12 @@ export default async function ProjectPage({
               Detect gaps (AI)
             </Button>
           )}
+          <Button
+            variant="outline"
+            render={<Link href={`/projects/${id}/requirements`} />}
+          >
+            Requirements &amp; spend
+          </Button>
           <Button render={<Link href={`/projects/${id}/gaps`} />}>
             View gaps ({openGapCount})
           </Button>
@@ -786,6 +796,46 @@ export default async function ProjectPage({
             <p className="text-sm text-muted-foreground">
               No achievements yet. Verify a resolved gap on the gaps page to log
               one.
+            </p>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Acquirements — auto-logged when a requirement is acquired (Output proof) */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Acquired resources</CardTitle>
+          <CardDescription>
+            Auto-logged when a requirement reaches “acquired”. With achievements,
+            this is the proof the investment paid off.{" "}
+            <Link href={`/projects/${id}/requirements`} className="underline">
+              Manage requirements & spend
+            </Link>
+            .
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {acquirements.length > 0 ? (
+            <ul className="flex flex-col gap-2">
+              {acquirements.map((a) => (
+                <li
+                  key={a.id}
+                  className="flex items-center justify-between gap-2 rounded-md border px-3 py-2 text-sm"
+                >
+                  <span className="font-medium">🎁 {a.title}</span>
+                  <span className="text-muted-foreground">
+                    {a.cost != null
+                      ? `$${a.cost.toLocaleString(undefined, { maximumFractionDigits: 2 })} · `
+                      : ""}
+                    {a.acquiredAt.toISOString().slice(0, 10)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              Nothing acquired yet. Set a requirement to “acquired” on the gaps to
+              log one.
             </p>
           )}
         </CardContent>

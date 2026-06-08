@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getPersonWithTasks } from "@/lib/people";
 import { getAccessibleProjectIds, requireUser } from "@/lib/access";
-import { WORK_STATUS_LABELS, type WorkStatus } from "@/lib/constants";
+import { WORK_STATUS_LABELS, WORK_STATUSES } from "@/lib/constants";
 import { Badge } from "@/components/ui/badge";
 import {
   Card,
@@ -69,75 +69,88 @@ export default async function PersonPage({
         <CardHeader>
           <CardTitle>Assigned tasks ({tasks.length})</CardTitle>
           <CardDescription>
-            Across all projects. Overdue tasks are flagged so overload is obvious.
+            Across all projects, grouped by status. Overdue tasks are flagged so
+            overload is obvious.
           </CardDescription>
         </CardHeader>
-        <CardContent>
-          {tasks.length > 0 ? (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Task</TableHead>
-                  <TableHead>Project</TableHead>
-                  <TableHead>Gap</TableHead>
-                  <TableHead className="w-28">Status</TableHead>
-                  <TableHead className="w-32">Due</TableHead>
-                  <TableHead className="w-24">Team</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {tasks.map((t) => (
-                  <TableRow key={t.id}>
-                    <TableCell className="font-medium">
-                      {t.title}
-                      <div className="text-xs text-muted-foreground">
-                        {t.actionTitle}
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <Link
-                        href={`/projects/${t.projectId}`}
-                        className="hover:underline"
-                      >
-                        {t.projectName}
-                      </Link>
-                    </TableCell>
-                    <TableCell>
-                      <Link
-                        href={`/projects/${t.projectId}/gaps/${t.gapId}`}
-                        className="hover:underline"
-                      >
-                        {t.gapTitle}
-                      </Link>
-                    </TableCell>
-                    <TableCell>
-                      <Badge
-                        variant={t.status === "done" ? "secondary" : "default"}
-                      >
-                        {WORK_STATUS_LABELS[t.status as WorkStatus] ?? t.status}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>
-                      {t.dueDate ? (
-                        <span className={t.overdue ? "font-medium text-destructive" : ""}>
-                          {t.dueDate.toISOString().slice(0, 10)}
-                          {t.overdue && " ⚠"}
-                        </span>
-                      ) : (
-                        <span className="text-muted-foreground">—</span>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-muted-foreground">
-                      {t.teamName ?? "—"}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          ) : (
+        <CardContent className="flex flex-col gap-6">
+          {tasks.length === 0 ? (
             <p className="text-sm text-muted-foreground">
               No tasks assigned to {person.name} yet.
             </p>
+          ) : (
+            WORK_STATUSES.map((status) => {
+              const group = tasks.filter((t) => t.status === status);
+              if (group.length === 0) return null;
+              return (
+                <div key={status}>
+                  <div className="mb-2 flex items-center gap-2">
+                    <h3 className="font-medium">
+                      {WORK_STATUS_LABELS[status]}
+                    </h3>
+                    <Badge variant="secondary">{group.length}</Badge>
+                  </div>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Task</TableHead>
+                        <TableHead>Project</TableHead>
+                        <TableHead>Gap</TableHead>
+                        <TableHead className="w-32">Due</TableHead>
+                        <TableHead className="w-24">Team</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {group.map((t) => (
+                        <TableRow key={t.id}>
+                          <TableCell className="font-medium">
+                            {t.title}
+                            <div className="text-xs text-muted-foreground">
+                              {t.actionTitle}
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <Link
+                              href={`/projects/${t.projectId}`}
+                              className="hover:underline"
+                            >
+                              {t.projectName}
+                            </Link>
+                          </TableCell>
+                          <TableCell>
+                            <Link
+                              href={`/projects/${t.projectId}/gaps/${t.gapId}`}
+                              className="hover:underline"
+                            >
+                              {t.gapTitle}
+                            </Link>
+                          </TableCell>
+                          <TableCell>
+                            {t.dueDate ? (
+                              <span
+                                className={
+                                  t.overdue
+                                    ? "font-medium text-destructive"
+                                    : ""
+                                }
+                              >
+                                {t.dueDate.toISOString().slice(0, 10)}
+                                {t.overdue && " ⚠"}
+                              </span>
+                            ) : (
+                              <span className="text-muted-foreground">—</span>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-muted-foreground">
+                            {t.teamName ?? "—"}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              );
+            })
           )}
         </CardContent>
       </Card>
