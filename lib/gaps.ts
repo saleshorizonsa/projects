@@ -10,8 +10,14 @@ export async function getOrCreateCurrentAssessment(projectId: string) {
   });
   if (existing) return existing;
 
+  // The very first assessment of a project is the baseline by default.
   return prisma.assessment.create({
-    data: { projectId, source: "manual", note: "Current state" },
+    data: {
+      projectId,
+      source: "manual",
+      narrative: "Current state",
+      isBaseline: true,
+    },
   });
 }
 
@@ -20,7 +26,7 @@ export async function getOrCreateCurrentAssessment(projectId: string) {
  * Copies the latest assessment's scores forward as a starting point so the new
  * snapshot is complete; the user then edits current scores to record progress.
  */
-export async function takeAssessment(projectId: string, note?: string) {
+export async function takeAssessment(projectId: string, narrative?: string) {
   const latest = await prisma.assessment.findFirst({
     where: { projectId },
     orderBy: { takenAt: "desc" },
@@ -28,7 +34,7 @@ export async function takeAssessment(projectId: string, note?: string) {
   });
 
   const created = await prisma.assessment.create({
-    data: { projectId, source: "manual", note: note?.trim() || null },
+    data: { projectId, source: "manual", narrative: narrative?.trim() || null },
   });
 
   if (latest && latest.scores.length > 0) {
@@ -38,6 +44,8 @@ export async function takeAssessment(projectId: string, note?: string) {
         capabilityId: s.capabilityId,
         currentScore: s.currentScore,
         targetScore: s.targetScore,
+        evidence: s.evidence,
+        confidence: s.confidence,
       })),
     });
   }
@@ -195,7 +203,8 @@ export async function getRankedGaps(projectId: string): Promise<RankedGap[]> {
 export type AssessmentSummary = {
   id: string;
   takenAt: Date;
-  note: string | null;
+  narrative: string | null;
+  isBaseline: boolean;
   source: string;
   open: number;
   closed: number;
@@ -213,12 +222,35 @@ export async function getAssessmentSummaries(
   return assessments.map((a, idx) => ({
     id: a.id,
     takenAt: a.takenAt,
-    note: a.note,
+    narrative: a.narrative,
+    isBaseline: a.isBaseline,
     source: a.source,
     open: a.scores.filter((s) => s.targetScore > s.currentScore).length,
     closed: a.scores.filter((s) => s.targetScore <= s.currentScore).length,
     isLatest: idx === 0,
   }));
+}
+
+// before/after span for a capability across the project's assessments —
+// baseline (or earliest) current score → latest current score, plus target.
+// Used to stamp Achievements with proof of movement when a gap is verified.
+export async function getCapabilityScoreSpan(
+  projectId: string,
+  capabilityId: string
+): Promise<{ from: number | null; to: number | null; target: number | null }> {
+  const assessments = await prisma.assessment.findMany({
+    where: { projectId, scores: { some: { capabilityId } } },
+    orderBy: { takenAt: "asc" },
+    include: { scores: { where: { capabilityId } } },
+  });
+  if (assessments.length === 0) return { from: null, to: null, target: null };
+  const baseline = assessments.find((a) => a.isBaseline) ?? assessments[0];
+  const latest = assessments[assessments.length - 1];
+  return {
+    from: baseline.scores[0]?.currentScore ?? null,
+    to: latest.scores[0]?.currentScore ?? null,
+    target: latest.scores[0]?.targetScore ?? null,
+  };
 }
 
 // ------------------------------------------------------------- Burndown

@@ -6,21 +6,33 @@ import {
   getAssessmentSummaries,
   getOrCreateCurrentAssessment,
 } from "@/lib/gaps";
+import { getGoalsWithProgress, getRegressions } from "@/lib/phase2";
 import {
   addCapability,
   addGoal,
   applyTemplate,
   deleteCapability,
   deleteGoal,
+  linkGoalGap,
   saveScore,
+  setBaselineAssessment,
   shareProjectWithTeam,
   shareProjectWithUser,
   takeAssessmentAction,
-  toggleGoal,
+  unlinkGoalGap,
   unshareProjectTeam,
   unshareProjectUser,
 } from "@/app/actions";
-import { CLOSED_GAP_STATUSES, SCORE_MAX, SCORE_MIN } from "@/lib/constants";
+import {
+  CLOSED_GAP_STATUSES,
+  CONFIDENCE_LEVELS,
+  isPast,
+  METRIC_TYPE_LABELS,
+  METRIC_TYPES,
+  nextDueDate,
+  SCORE_MAX,
+  SCORE_MIN,
+} from "@/lib/constants";
 import { TEMPLATES } from "@/lib/templates";
 import { NativeSelect } from "@/components/ui/native-select";
 import { EditProjectDialog } from "@/components/edit-project-dialog";
@@ -81,6 +93,22 @@ export default async function ProjectPage({
     where: { projectId: id },
     orderBy: { achievedAt: "desc" },
   });
+  const goals = await getGoalsWithProgress(id);
+  const regressions = await getRegressions(id);
+  // All gaps for this project (for linking to goals).
+  const projectGaps = await prisma.gap.findMany({
+    where: { projectId: id },
+    select: { id: true, title: true, status: true },
+    orderBy: { title: "asc" },
+  });
+
+  // "Next assessment due" from review cadence + the latest assessment.
+  const lastTakenAt = assessments[0]?.takenAt ?? null;
+  const dueDate =
+    project.reviewCadence && lastTakenAt
+      ? nextDueDate(lastTakenAt, project.reviewCadence)
+      : null;
+  const overdue = isPast(dueDate);
 
   const openGapCount = await prisma.gap.count({
     where: { projectId: id, status: { notIn: CLOSED_GAP_STATUSES } },
@@ -259,54 +287,123 @@ export default async function ProjectPage({
         </Card>
       )}
 
-      {/* Goals — Define */}
+      {/* Goals — Define (measurable; progress computed from linked gaps) */}
       <Card>
         <CardHeader>
           <CardTitle>Goals</CardTitle>
           <CardDescription>
-            Define · the target state this project is aiming for.
+            Define · measurable targets. Progress is computed from the linked gaps
+            (% verified) — never set by hand. Link the gaps that fulfil each goal.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
-          {project.goals.length > 0 && (
-            <ul className="flex flex-col gap-2">
-              {project.goals.map((goal) => (
-                <li
-                  key={goal.id}
-                  className="flex items-center justify-between gap-2 rounded-md border px-3 py-2"
-                >
-                  <div className="flex items-center gap-2">
-                    <form action={toggleGoal}>
-                      <input type="hidden" name="id" value={goal.id} />
-                      <input type="hidden" name="projectId" value={id} />
-                      <SubmitButton variant="outline" size="xs">
-                        {goal.status === "done" ? "Reopen" : "Mark done"}
-                      </SubmitButton>
-                    </form>
-                    <span
-                      className={
-                        goal.status === "done"
-                          ? "text-muted-foreground line-through"
-                          : ""
-                      }
-                    >
-                      {goal.title}
-                    </span>
-                    {goal.targetDate && (
-                      <span className="text-xs text-muted-foreground">
-                        by {goal.targetDate.toISOString().slice(0, 10)}
-                      </span>
+          {goals.length > 0 && (
+            <ul className="flex flex-col gap-3">
+              {goals.map((goal) => {
+                const unlinked = projectGaps.filter(
+                  (pg) => !goal.linkedGaps.some((lg) => lg.id === pg.id)
+                );
+                return (
+                  <li
+                    key={goal.id}
+                    className="flex flex-col gap-2 rounded-md border p-3"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-medium">{goal.title}</span>
+                        {goal.metricType === "value" &&
+                          goal.metricTargetValue != null && (
+                            <Badge variant="outline">
+                              target {goal.metricTargetValue}
+                              {goal.metricUnit ? ` ${goal.metricUnit}` : ""}
+                            </Badge>
+                          )}
+                        {goal.metricType === "capability_scores" && (
+                          <Badge variant="outline">capability scores</Badge>
+                        )}
+                        {goal.targetDate && (
+                          <span className="text-xs text-muted-foreground">
+                            by {goal.targetDate.toISOString().slice(0, 10)}
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Badge
+                          variant={
+                            goal.progress === 100 && goal.total > 0
+                              ? "default"
+                              : "secondary"
+                          }
+                        >
+                          {goal.progress}% · {goal.verified}/{goal.total} verified
+                        </Badge>
+                        <form action={deleteGoal}>
+                          <input type="hidden" name="id" value={goal.id} />
+                          <input type="hidden" name="projectId" value={id} />
+                          <SubmitButton variant="ghost" size="xs">
+                            Remove
+                          </SubmitButton>
+                        </form>
+                      </div>
+                    </div>
+                    <div className="h-1.5 w-full overflow-hidden rounded bg-muted">
+                      <div
+                        className="h-1.5 rounded bg-primary"
+                        style={{ width: `${goal.progress}%` }}
+                      />
+                    </div>
+                    {goal.linkedGaps.length > 0 && (
+                      <ul className="flex flex-wrap gap-1.5">
+                        {goal.linkedGaps.map((lg) => (
+                          <li
+                            key={lg.id}
+                            className="flex items-center gap-1 rounded border px-2 py-0.5 text-xs"
+                          >
+                            <span>
+                              {lg.status === "verified" ? "✓" : "○"} {lg.title}
+                            </span>
+                            <form action={unlinkGoalGap}>
+                              <input type="hidden" name="projectId" value={id} />
+                              <input type="hidden" name="goalId" value={goal.id} />
+                              <input type="hidden" name="gapId" value={lg.id} />
+                              <button
+                                type="submit"
+                                className="text-muted-foreground hover:text-foreground"
+                              >
+                                ✕
+                              </button>
+                            </form>
+                          </li>
+                        ))}
+                      </ul>
                     )}
-                  </div>
-                  <form action={deleteGoal}>
-                    <input type="hidden" name="id" value={goal.id} />
-                    <input type="hidden" name="projectId" value={id} />
-                    <SubmitButton variant="ghost" size="xs">
-                      Remove
-                    </SubmitButton>
-                  </form>
-                </li>
-              ))}
+                    {unlinked.length > 0 && (
+                      <form action={linkGoalGap} className="flex items-end gap-2">
+                        <input type="hidden" name="projectId" value={id} />
+                        <input type="hidden" name="goalId" value={goal.id} />
+                        <NativeSelect
+                          name="gapId"
+                          defaultValue=""
+                          required
+                          className="max-w-xs"
+                        >
+                          <option value="" disabled>
+                            Link a gap…
+                          </option>
+                          {unlinked.map((pg) => (
+                            <option key={pg.id} value={pg.id}>
+                              {pg.title}
+                            </option>
+                          ))}
+                        </NativeSelect>
+                        <SubmitButton variant="outline" size="sm">
+                          Link
+                        </SubmitButton>
+                      </form>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
           )}
           <form
@@ -324,6 +421,30 @@ export default async function ProjectPage({
               />
             </div>
             <div className="flex flex-col gap-1.5">
+              <Label htmlFor="goal-metric">Metric</Label>
+              <NativeSelect id="goal-metric" name="metricType" defaultValue="none">
+                {METRIC_TYPES.map((m) => (
+                  <option key={m} value={m}>
+                    {METRIC_TYPE_LABELS[m]}
+                  </option>
+                ))}
+              </NativeSelect>
+            </div>
+            <div className="flex w-24 flex-col gap-1.5">
+              <Label htmlFor="goal-target-value">Target</Label>
+              <Input
+                id="goal-target-value"
+                name="metricTargetValue"
+                type="number"
+                step="any"
+                placeholder="90"
+              />
+            </div>
+            <div className="flex w-20 flex-col gap-1.5">
+              <Label htmlFor="goal-unit">Unit</Label>
+              <Input id="goal-unit" name="metricUnit" placeholder="%" />
+            </div>
+            <div className="flex flex-col gap-1.5">
               <Label htmlFor="goal-date">Target date</Label>
               <Input id="goal-date" name="targetDate" type="date" />
             </div>
@@ -332,14 +453,72 @@ export default async function ProjectPage({
         </CardContent>
       </Card>
 
+      {/* Regressions — Phase 2 time-aware checks */}
+      {(regressions.dropped.length > 0 || regressions.reopened.length > 0) && (
+        <Card>
+          <CardHeader>
+            <CardTitle>⚠ Regressions</CardTitle>
+            <CardDescription>
+              Things that moved backwards since an earlier assessment.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3 text-sm">
+            {regressions.dropped.length > 0 && (
+              <div>
+                <div className="font-medium">Capability scores that dropped</div>
+                <ul className="mt-1 flex flex-col gap-1">
+                  {regressions.dropped.map((d) => (
+                    <li key={d.name} className="text-muted-foreground">
+                      {d.name}:{" "}
+                      <span className="text-destructive">
+                        {d.from} → {d.to}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {regressions.reopened.length > 0 && (
+              <div>
+                <div className="font-medium">Verified gaps that reopened</div>
+                <ul className="mt-1 flex flex-col gap-1">
+                  {regressions.reopened.map((r) => (
+                    <li key={r.id}>
+                      <Link
+                        href={`/projects/${id}/gaps/${r.id}`}
+                        className="text-destructive hover:underline"
+                      >
+                        {r.title}
+                      </Link>{" "}
+                      <span className="text-muted-foreground">({r.status})</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
       {/* Assessments — Feedback (dated snapshots) */}
       <Card>
         <CardHeader>
-          <CardTitle>Assessments</CardTitle>
-          <CardDescription>
-            Feedback · dated snapshots of current state. Scoring below edits the
-            latest one; take a new assessment to record progress over time.
-          </CardDescription>
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <CardTitle>Assessments</CardTitle>
+              <CardDescription>
+                Feedback · dated snapshots of current state. Scoring below edits
+                the latest one; take a new assessment to record progress.
+              </CardDescription>
+            </div>
+            {dueDate && (
+              <Badge variant={overdue ? "destructive" : "secondary"}>
+                {overdue ? "Assessment overdue" : "Next due"}:{" "}
+                {dueDate.toISOString().slice(0, 10)}
+                {project.reviewCadence ? ` (${project.reviewCadence})` : ""}
+              </Badge>
+            )}
+          </div>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           <ul className="flex flex-col gap-2">
@@ -348,18 +527,30 @@ export default async function ProjectPage({
                 key={a.id}
                 className="flex flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2 text-sm"
               >
-                <div className="flex items-center gap-2">
+                <div className="flex flex-1 flex-wrap items-center gap-2">
                   <span className="font-medium">
                     {a.takenAt.toISOString().slice(0, 16).replace("T", " ")}
                   </span>
                   {a.isLatest && <Badge>latest</Badge>}
-                  {a.note && (
-                    <span className="text-muted-foreground">— {a.note}</span>
+                  {a.isBaseline && <Badge variant="outline">baseline</Badge>}
+                  {a.narrative && (
+                    <span className="text-muted-foreground">— {a.narrative}</span>
                   )}
                 </div>
-                <span className="text-muted-foreground">
-                  {a.open} open · {a.closed} met
-                </span>
+                <div className="flex items-center gap-3">
+                  <span className="text-muted-foreground">
+                    {a.open} open · {a.closed} met
+                  </span>
+                  {!a.isBaseline && (
+                    <form action={setBaselineAssessment}>
+                      <input type="hidden" name="projectId" value={id} />
+                      <input type="hidden" name="assessmentId" value={a.id} />
+                      <SubmitButton variant="ghost" size="xs">
+                        Set baseline
+                      </SubmitButton>
+                    </form>
+                  )}
+                </div>
               </li>
             ))}
           </ul>
@@ -369,11 +560,13 @@ export default async function ProjectPage({
           >
             <input type="hidden" name="projectId" value={id} />
             <div className="flex flex-1 flex-col gap-1.5">
-              <Label htmlFor="assessment-note">New assessment note</Label>
+              <Label htmlFor="assessment-narrative">
+                New assessment — current-state narrative
+              </Label>
               <Input
-                id="assessment-note"
-                name="note"
-                placeholder="e.g. After Q2 improvements"
+                id="assessment-narrative"
+                name="narrative"
+                placeholder="e.g. After Q2 improvements: pipeline tooling live, reporting still manual"
               />
             </div>
             <SubmitButton variant="outline" pendingText="Snapshotting…">
@@ -423,7 +616,7 @@ export default async function ProjectPage({
                       <TableCell colSpan={3}>
                         <form
                           action={saveScore}
-                          className="flex items-center gap-2"
+                          className="flex flex-wrap items-center gap-2"
                           id={`score-${cap.id}`}
                         >
                           <input type="hidden" name="projectId" value={id} />
@@ -438,8 +631,9 @@ export default async function ProjectPage({
                             min={SCORE_MIN}
                             max={SCORE_MAX}
                             defaultValue={current}
-                            placeholder="1-5"
-                            className="w-20"
+                            placeholder="cur"
+                            className="w-16"
+                            aria-label="Current score"
                           />
                           <Input
                             name="targetScore"
@@ -447,10 +641,11 @@ export default async function ProjectPage({
                             min={SCORE_MIN}
                             max={SCORE_MAX}
                             defaultValue={target}
-                            placeholder="1-5"
-                            className="w-20"
+                            placeholder="tgt"
+                            className="w-16"
+                            aria-label="Target score"
                           />
-                          <span className="w-12 text-center">
+                          <span className="w-10 text-center">
                             {gapSize > 0 ? (
                               <Badge variant="destructive">+{gapSize}</Badge>
                             ) : score ? (
@@ -459,6 +654,25 @@ export default async function ProjectPage({
                               <span className="text-muted-foreground">—</span>
                             )}
                           </span>
+                          <NativeSelect
+                            name="confidence"
+                            defaultValue={score?.confidence ?? "medium"}
+                            aria-label="Confidence"
+                            className="w-24"
+                          >
+                            {CONFIDENCE_LEVELS.map((c) => (
+                              <option key={c} value={c}>
+                                {c}
+                              </option>
+                            ))}
+                          </NativeSelect>
+                          <Input
+                            name="evidence"
+                            defaultValue={score?.evidence ?? ""}
+                            placeholder="evidence / link"
+                            className="w-44"
+                            aria-label="Evidence"
+                          />
                           <SubmitButton size="sm" pendingText="Saving…">
                             Save
                           </SubmitButton>
@@ -553,7 +767,15 @@ export default async function ProjectPage({
                   key={a.id}
                   className="flex items-center justify-between gap-2 rounded-md border px-3 py-2 text-sm"
                 >
-                  <span className="font-medium">🏆 {a.title}</span>
+                  <span className="font-medium">
+                    🏆 {a.title}
+                    {a.fromScore != null && a.toScore != null && (
+                      <span className="ml-2 font-normal text-muted-foreground">
+                        {a.fromScore} → {a.toScore}
+                        {a.targetScore != null ? ` (target ${a.targetScore})` : ""}
+                      </span>
+                    )}
+                  </span>
                   <span className="text-muted-foreground">
                     {a.achievedAt.toISOString().slice(0, 10)}
                   </span>

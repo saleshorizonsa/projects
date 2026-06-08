@@ -112,6 +112,44 @@ export function isRequirementStatus(v: string): v is RequirementStatus {
   return (REQUIREMENT_STATUSES as readonly string[]).includes(v);
 }
 
+// ---- Phase 2: measurable & time-aware ----
+
+export const CONFIDENCE_LEVELS = ["low", "medium", "high"] as const;
+export type ConfidenceLevel = (typeof CONFIDENCE_LEVELS)[number];
+export function isConfidence(v: string): v is ConfidenceLevel {
+  return (CONFIDENCE_LEVELS as readonly string[]).includes(v);
+}
+
+export const METRIC_TYPES = ["none", "value", "capability_scores"] as const;
+export type MetricType = (typeof METRIC_TYPES)[number];
+export const METRIC_TYPE_LABELS: Record<MetricType, string> = {
+  none: "No metric",
+  value: "Target value",
+  capability_scores: "Capability scores",
+};
+export function isMetricType(v: string): v is MetricType {
+  return (METRIC_TYPES as readonly string[]).includes(v);
+}
+
+export const REVIEW_CADENCES = ["monthly", "quarterly"] as const;
+export type ReviewCadence = (typeof REVIEW_CADENCES)[number];
+export function isReviewCadence(v: string): v is ReviewCadence {
+  return (REVIEW_CADENCES as readonly string[]).includes(v);
+}
+
+// Next assessment due = last assessment date + cadence interval.
+export function nextDueDate(lastTakenAt: Date, cadence: string): Date | null {
+  const d = new Date(lastTakenAt);
+  if (cadence === "monthly") d.setMonth(d.getMonth() + 1);
+  else if (cadence === "quarterly") d.setMonth(d.getMonth() + 3);
+  else return null;
+  return d;
+}
+
+export function isPast(date: Date | null): boolean {
+  return date ? date.getTime() < Date.now() : false;
+}
+
 // Clamp a 1-5 score coming from form input.
 export function clampScore(value: number): number {
   if (Number.isNaN(value)) return SCORE_MIN;

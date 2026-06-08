@@ -85,11 +85,12 @@ async function main() {
 
   async function snapshot(
     takenAt: Date,
-    note: string,
-    scores: Record<string, [number, number]>
+    narrative: string,
+    scores: Record<string, [number, number]>,
+    isBaseline = false
   ) {
     const assessment = await prisma.assessment.create({
-      data: { projectId: project.id, source: "manual", note, takenAt },
+      data: { projectId: project.id, source: "manual", narrative, takenAt, isBaseline },
     });
     for (const [name, [cur, tgt]] of Object.entries(scores)) {
       await prisma.capabilityScore.create({
@@ -104,7 +105,7 @@ async function main() {
     return assessment;
   }
 
-  await snapshot(monthAgo, "Initial assessment", earlier);
+  await snapshot(monthAgo, "Initial assessment", earlier, true);
   const latest = await snapshot(now, "After Q2 improvements", current);
 
   // Open gaps computed from the latest assessment (as recomputeGaps would).

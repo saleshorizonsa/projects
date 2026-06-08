@@ -19,6 +19,8 @@ model Project {
   description String?  @db.Text
   status      String   @default("active") // active | on_hold | done | archived
   ownerId     String? // owning User (backfilled in Phase 5; set from session on create)
+  budget        Float? // optional project budget (planned spend vs budget arrives in Phase 4)
+  reviewCadence String? // null | monthly | quarterly — drives "next assessment due"
   createdAt   DateTime @default(now())
 
   owner        User?              @relation("OwnedProjects", fields: [ownerId], references: [id])
@@ -33,7 +35,8 @@ model Project {
   @@index([ownerId])
 }
 
-// Define / Output — the target state the project is aiming for.
+// Define / Output — a measurable target the project is aiming for. Progress is
+// COMPUTED from linked gaps (% verified), never stored as a manual status.
 model Goal {
   id          String    @id @default(cuid())
   projectId   String
@@ -41,10 +44,27 @@ model Goal {
   description String?   @db.Text
   targetDate  DateTime?
   status      String    @default("open") // open | done
+  metricType        String  @default("none") // none | value | capability_scores
+  metricTargetValue Float? // for metricType = "value"
+  metricUnit        String? // e.g. "%", "tickets/wk"
 
-  project     Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  gaps    GoalGap[]
 
   @@index([projectId])
+}
+
+// Link table: a Goal is measured by the gaps that, once verified, fulfil it.
+model GoalGap {
+  id     String @id @default(cuid())
+  goalId String
+  gapId  String
+
+  goal Goal @relation(fields: [goalId], references: [id], onDelete: Cascade)
+  gap  Gap  @relation(fields: [gapId], references: [id], onDelete: Cascade)
+
+  @@unique([goalId, gapId])
+  @@index([gapId])
 }
 
 // A dimension the project is scored against (e.g. "Lead capture").
@@ -65,11 +85,14 @@ model Capability {
 // snapshots per project (the latest is the editable "current" one), enabling
 // the gap burndown over time.
 model Assessment {
-  id        String   @id @default(cuid())
-  projectId String
-  takenAt   DateTime @default(now())
-  note      String?  @db.Text
-  source    String   @default("manual") // manual | ai
+  id         String   @id @default(cuid())
+  projectId  String
+  takenAt    DateTime @default(now())
+  // free-text current-state narrative (kept on the existing "note" column to
+  // preserve Phase 1 data; feeds AI detection later, holds nuance now)
+  narrative  String?  @map("note") @db.Text
+  isBaseline Boolean  @default(false) // one snapshot can be flagged the baseline
+  source     String   @default("manual") // manual | ai
 
   project Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
   scores  CapabilityScore[]
@@ -79,11 +102,13 @@ model Assessment {
 
 // The current/target maturity (1-5) for one capability within an assessment.
 model CapabilityScore {
-  id           String @id @default(cuid())
+  id           String  @id @default(cuid())
   assessmentId String
   capabilityId String
   currentScore Int // 1-5
   targetScore  Int // 1-5
+  evidence     String? @db.Text // note or link backing the score
+  confidence   String  @default("medium") // low | medium | high
 
   assessment Assessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
   capability Capability @relation(fields: [capabilityId], references: [id], onDelete: Cascade)
@@ -119,6 +144,7 @@ model Gap {
   actions      Action[]
   audits       GapAudit[]
   requirements Requirement[]
+  goals        GoalGap[]
 
   // One gap per capability per project per source. AI gaps keep capabilityId
   // null (multiple NULLs are allowed in a unique index, so they never collide).
@@ -129,11 +155,14 @@ model Gap {
 // Auto-logged when a gap reaches 'verified' — the record that the loop worked.
 // Created automatically by the app, never via a manual entry screen.
 model Achievement {
-  id         String   @id @default(cuid())
-  projectId  String
-  gapId      String   @unique // one achievement per gap (idempotent)
-  title      String
-  achievedAt DateTime @default(now())
+  id          String   @id @default(cuid())
+  projectId   String
+  gapId       String   @unique // one achievement per gap (idempotent)
+  title       String
+  achievedAt  DateTime @default(now())
+  fromScore   Int? // current score when the gap was first measured (before)
+  toScore     Int? // current score at verification (after)
+  targetScore Int? // the target it had to reach
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
   gap     Gap     @relation(fields: [gapId], references: [id], onDelete: Cascade)

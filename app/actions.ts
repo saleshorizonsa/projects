@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import {
+  getCapabilityScoreSpan,
   getOrCreateCurrentAssessment,
   recomputeGaps,
   takeAssessment,
@@ -12,9 +13,12 @@ import {
   clampScore,
   GAP_STATUSES,
   impactForSeverity,
+  isConfidence,
   isCostCadence,
+  isMetricType,
   isRequirementStatus,
   isRequirementType,
+  isReviewCadence,
   isWorkStatus,
   PROJECT_STATUSES,
   SEVERITIES,
@@ -54,6 +58,9 @@ export async function updateProject(formData: FormData) {
   if (!id || !name) return;
   if (!(await assertProjectEdit(id))) return;
   const status = str(formData, "status");
+  const cadence = str(formData, "reviewCadence");
+  const budgetRaw = str(formData, "budget");
+  const budget = budgetRaw ? Number(budgetRaw) : null;
   await prisma.project.update({
     where: { id },
     data: {
@@ -62,6 +69,8 @@ export async function updateProject(formData: FormData) {
       status: PROJECT_STATUSES.includes(status as ProjectStatus)
         ? status
         : undefined,
+      budget: budget !== null && !Number.isNaN(budget) ? budget : null,
+      reviewCadence: isReviewCadence(cadence) ? cadence : null,
     },
   });
   revalidatePath(`/projects/${id}`);
@@ -142,14 +151,67 @@ export async function addGoal(formData: FormData) {
   if (!projectId || !title) return;
   if (!(await assertProjectEdit(projectId))) return;
   const targetDate = str(formData, "targetDate");
+  const metricType = str(formData, "metricType");
+  const mtv = str(formData, "metricTargetValue");
+  const metricTargetValue = mtv ? Number(mtv) : null;
   await prisma.goal.create({
     data: {
       projectId,
       title,
       description: str(formData, "description") || null,
       targetDate: targetDate ? new Date(targetDate) : null,
+      metricType: isMetricType(metricType) ? metricType : "none",
+      metricTargetValue:
+        metricTargetValue !== null && !Number.isNaN(metricTargetValue)
+          ? metricTargetValue
+          : null,
+      metricUnit: str(formData, "metricUnit") || null,
     },
   });
+  revalidatePath(`/projects/${projectId}`);
+}
+
+// Link / unlink a gap to a goal — goal progress is computed from these links.
+export async function linkGoalGap(formData: FormData) {
+  const projectId = str(formData, "projectId");
+  const goalId = str(formData, "goalId");
+  const gapId = str(formData, "gapId");
+  if (!projectId || !goalId || !gapId) return;
+  if (!(await assertProjectEdit(projectId))) return;
+  await prisma.goalGap.upsert({
+    where: { goalId_gapId: { goalId, gapId } },
+    create: { goalId, gapId },
+    update: {},
+  });
+  revalidatePath(`/projects/${projectId}`);
+}
+
+export async function unlinkGoalGap(formData: FormData) {
+  const projectId = str(formData, "projectId");
+  const goalId = str(formData, "goalId");
+  const gapId = str(formData, "gapId");
+  if (!projectId || !goalId || !gapId) return;
+  if (!(await assertProjectEdit(projectId))) return;
+  await prisma.goalGap.deleteMany({ where: { goalId, gapId } });
+  revalidatePath(`/projects/${projectId}`);
+}
+
+// Flag one assessment as the project's baseline (clears the flag on the rest).
+export async function setBaselineAssessment(formData: FormData) {
+  const projectId = str(formData, "projectId");
+  const assessmentId = str(formData, "assessmentId");
+  if (!projectId || !assessmentId) return;
+  if (!(await assertProjectEdit(projectId))) return;
+  await prisma.$transaction([
+    prisma.assessment.updateMany({
+      where: { projectId },
+      data: { isBaseline: false },
+    }),
+    prisma.assessment.update({
+      where: { id: assessmentId },
+      data: { isBaseline: true },
+    }),
+  ]);
   revalidatePath(`/projects/${projectId}`);
 }
 
@@ -213,6 +275,9 @@ export async function saveScore(formData: FormData) {
   if (!(await assertProjectEdit(projectId))) return;
   const currentScore = clampScore(Number(str(formData, "currentScore")));
   const targetScore = clampScore(Number(str(formData, "targetScore")));
+  const confidenceRaw = str(formData, "confidence");
+  const confidence = isConfidence(confidenceRaw) ? confidenceRaw : "medium";
+  const evidence = str(formData, "evidence") || null;
 
   const assessment = await getOrCreateCurrentAssessment(projectId);
   await prisma.capabilityScore.upsert({
@@ -222,12 +287,14 @@ export async function saveScore(formData: FormData) {
         capabilityId,
       },
     },
-    update: { currentScore, targetScore },
+    update: { currentScore, targetScore, confidence, evidence },
     create: {
       assessmentId: assessment.id,
       capabilityId,
       currentScore,
       targetScore,
+      confidence,
+      evidence,
     },
   });
 
@@ -281,14 +348,25 @@ export async function updateGapStatus(
   // Reaching "verified" auto-logs an Achievement (idempotent — one per gap).
   // Moving back out of "verified" removes it, keeping the record consistent.
   if (status === "verified") {
+    // Stamp the achievement with the before/after movement (proof the loop worked).
+    const span = gap.capabilityId
+      ? await getCapabilityScoreSpan(projectId, gap.capabilityId)
+      : { from: null, to: null, target: null };
     await prisma.achievement.upsert({
       where: { gapId },
       create: {
         gapId,
         projectId: gap.projectId,
         title: gap.title.replace(/^Close gap in /, "Closed gap in ") || gap.title,
+        fromScore: span.from,
+        toScore: span.to,
+        targetScore: span.target,
       },
-      update: {},
+      update: {
+        fromScore: span.from,
+        toScore: span.to,
+        targetScore: span.target,
+      },
     });
   } else {
     await prisma.achievement.deleteMany({ where: { gapId } });
@@ -306,7 +384,7 @@ export async function takeAssessmentAction(formData: FormData) {
   const projectId = str(formData, "projectId");
   if (!projectId) return;
   if (!(await assertProjectEdit(projectId))) return;
-  await takeAssessment(projectId, str(formData, "note") || undefined);
+  await takeAssessment(projectId, str(formData, "narrative") || undefined);
   revalidatePath(`/projects/${projectId}`);
   revalidatePath(`/projects/${projectId}/gaps`);
 }

@@ -14,6 +14,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { NativeSelect } from "@/components/ui/native-select";
 import {
   Select,
   SelectContent,
@@ -28,6 +29,8 @@ type Project = {
   name: string;
   description: string | null;
   status: string;
+  budget: number | null;
+  reviewCadence: string | null;
 };
 
 export function EditProjectDialog({ project }: { project: Project }) {
@@ -67,6 +70,32 @@ export function EditProjectDialog({ project }: { project: Project }) {
                 ))}
               </SelectContent>
             </Select>
+          </div>
+          <div className="flex gap-3">
+            <div className="flex flex-1 flex-col gap-1.5">
+              <Label htmlFor="edit-cadence">Review cadence</Label>
+              <NativeSelect
+                id="edit-cadence"
+                name="reviewCadence"
+                defaultValue={project.reviewCadence ?? ""}
+              >
+                <option value="">none</option>
+                <option value="monthly">monthly</option>
+                <option value="quarterly">quarterly</option>
+              </NativeSelect>
+            </div>
+            <div className="flex flex-1 flex-col gap-1.5">
+              <Label htmlFor="edit-budget">Budget</Label>
+              <Input
+                id="edit-budget"
+                name="budget"
+                type="number"
+                step="0.01"
+                min="0"
+                defaultValue={project.budget ?? ""}
+                placeholder="optional"
+              />
+            </div>
           </div>
           <SubmitButton className="self-end">Save changes</SubmitButton>
         </form>
