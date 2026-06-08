@@ -171,6 +171,20 @@ export default async function ProjectPage({
           )}
           <Button
             variant="outline"
+            render={<Link href={`/projects/${id}/ratings`} />}
+          >
+            Multi-rater
+          </Button>
+          {editable && (
+            <Button variant="outline" render={<Link href={`/projects/${id}/import`} />}>
+              Import
+            </Button>
+          )}
+          <Button variant="outline" render={<Link href={`/projects/${id}/report`} />}>
+            Report
+          </Button>
+          <Button
+            variant="outline"
             render={<Link href={`/projects/${id}/requirements`} />}
           >
             Requirements &amp; spend

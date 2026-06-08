@@ -726,3 +726,136 @@ export async function deleteRequirement(formData: FormData) {
   await prisma.requirement.delete({ where: { id } });
   revalidatePath(`/projects/${projectId}/gaps/${gapId}`);
 }
+
+// ------------------------------------------ Phase 4: multi-rater scoring
+
+export async function addRating(formData: FormData) {
+  const projectId = str(formData, "projectId");
+  const capabilityId = str(formData, "capabilityId");
+  const raterId = str(formData, "raterId");
+  if (!projectId || !capabilityId || !raterId) return;
+  if (!(await assertProjectEdit(projectId))) return;
+  const currentScore = clampScore(Number(str(formData, "currentScore")));
+  const targetScore = clampScore(Number(str(formData, "targetScore")));
+  const assessment = await getOrCreateCurrentAssessment(projectId);
+  await prisma.rating.upsert({
+    where: {
+      assessmentId_capabilityId_raterId: {
+        assessmentId: assessment.id,
+        capabilityId,
+        raterId,
+      },
+    },
+    update: { currentScore, targetScore, note: str(formData, "note") || null },
+    create: {
+      assessmentId: assessment.id,
+      capabilityId,
+      raterId,
+      currentScore,
+      targetScore,
+      note: str(formData, "note") || null,
+    },
+  });
+  revalidatePath(`/projects/${projectId}/ratings`);
+}
+
+export async function deleteRating(formData: FormData) {
+  const id = str(formData, "id");
+  const projectId = str(formData, "projectId");
+  if (!id) return;
+  if (!(await assertProjectEdit(projectId))) return;
+  await prisma.rating.delete({ where: { id } });
+  revalidatePath(`/projects/${projectId}/ratings`);
+}
+
+// Adopt the raters' average as the canonical CapabilityScore (which drives gaps).
+export async function adoptAverageRating(formData: FormData) {
+  const projectId = str(formData, "projectId");
+  const capabilityId = str(formData, "capabilityId");
+  if (!projectId || !capabilityId) return;
+  if (!(await assertProjectEdit(projectId))) return;
+  const assessment = await getOrCreateCurrentAssessment(projectId);
+  const ratings = await prisma.rating.findMany({
+    where: { assessmentId: assessment.id, capabilityId },
+  });
+  if (ratings.length === 0) return;
+  const currentScore = clampScore(
+    Math.round(ratings.reduce((a, r) => a + r.currentScore, 0) / ratings.length)
+  );
+  const targetScore = clampScore(
+    Math.round(ratings.reduce((a, r) => a + r.targetScore, 0) / ratings.length)
+  );
+  await prisma.capabilityScore.upsert({
+    where: {
+      assessmentId_capabilityId: { assessmentId: assessment.id, capabilityId },
+    },
+    update: { currentScore, targetScore },
+    create: { assessmentId: assessment.id, capabilityId, currentScore, targetScore },
+  });
+  await recomputeGaps(projectId);
+  revalidatePath(`/projects/${projectId}/ratings`);
+  revalidatePath(`/projects/${projectId}`);
+  revalidatePath(`/projects/${projectId}/gaps`);
+}
+
+// ------------------------------------------ Phase 4: data import (CSV -> 1-5)
+
+export async function importScores(formData: FormData) {
+  const projectId = str(formData, "projectId");
+  if (!projectId) return;
+  if (!(await assertProjectEdit(projectId))) return;
+  const csv = str(formData, "csv");
+  const min = Number(str(formData, "metricMin"));
+  const max = Number(str(formData, "metricMax"));
+  if (!csv || Number.isNaN(min) || Number.isNaN(max) || max === min) return;
+
+  const caps = await prisma.capability.findMany({ where: { projectId } });
+  const byName = new Map(caps.map((c) => [c.name.trim().toLowerCase(), c.id]));
+  const assessment = await getOrCreateCurrentAssessment(projectId);
+
+  const lines = csv
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  for (const line of lines) {
+    const idx = line.lastIndexOf(",");
+    if (idx === -1) continue;
+    const name = line
+      .slice(0, idx)
+      .trim()
+      .replace(/^"|"$/g, "");
+    const val = Number(line.slice(idx + 1).trim());
+    if (Number.isNaN(val)) continue; // skips a header row or bad line
+    const capId = byName.get(name.toLowerCase());
+    if (!capId) continue;
+    // Linear map: value in [min,max] -> current score in [1,5].
+    const score = clampScore(Math.round(1 + (4 * (val - min)) / (max - min)));
+    const existing = await prisma.capabilityScore.findUnique({
+      where: {
+        assessmentId_capabilityId: {
+          assessmentId: assessment.id,
+          capabilityId: capId,
+        },
+      },
+    });
+    await prisma.capabilityScore.upsert({
+      where: {
+        assessmentId_capabilityId: {
+          assessmentId: assessment.id,
+          capabilityId: capId,
+        },
+      },
+      update: { currentScore: score },
+      create: {
+        assessmentId: assessment.id,
+        capabilityId: capId,
+        currentScore: score,
+        targetScore: existing?.targetScore ?? score,
+      },
+    });
+  }
+  await recomputeGaps(projectId);
+  revalidatePath(`/projects/${projectId}`);
+  revalidatePath(`/projects/${projectId}/import`);
+  revalidatePath(`/projects/${projectId}/gaps`);
+}

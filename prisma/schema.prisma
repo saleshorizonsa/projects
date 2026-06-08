@@ -78,6 +78,7 @@ model Capability {
   project Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
   scores  CapabilityScore[]
   gaps    Gap[]
+  ratings Rating[]
 
   @@index([projectId])
 }
@@ -97,6 +98,7 @@ model Assessment {
 
   project Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
   scores  CapabilityScore[]
+  ratings Rating[]
 
   @@index([projectId])
 }
@@ -260,6 +262,30 @@ model Person {
   user        User?            @relation(fields: [userId], references: [id], onDelete: SetNull)
   memberships TeamMembership[]
   tasks       Task[]
+  ratings     Rating[]
+}
+
+// Multi-rater scoring (Phase 4) — an individual rater's current/target read on a
+// capability within an assessment. Separate from the canonical CapabilityScore
+// (which still drives gaps); these surface DISAGREEMENT between raters and can be
+// adopted as the consensus average.
+model Rating {
+  id           String   @id @default(cuid())
+  assessmentId String
+  capabilityId String
+  raterId      String
+  currentScore Int // 1-5
+  targetScore  Int // 1-5
+  note         String?
+  createdAt    DateTime @default(now())
+
+  assessment Assessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  capability Capability @relation(fields: [capabilityId], references: [id], onDelete: Cascade)
+  rater      Person     @relation(fields: [raterId], references: [id], onDelete: Cascade)
+
+  @@unique([assessmentId, capabilityId, raterId]) // one rating per rater per capability per assessment
+  @@index([capabilityId])
+  @@index([raterId])
 }
 
 model Team {

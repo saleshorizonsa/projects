@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { CLOSED_GAP_STATUSES } from "@/lib/constants";
+import { rollupCosts, type CostRollup } from "@/lib/requirements";
 
 // "all" (admin) or an explicit list of accessible project ids.
 export type Scope = string[] | "all";
@@ -67,4 +68,51 @@ export async function getTasksByTeam(scope: Scope): Promise<Breakdown[]> {
     map.set(name, row);
   }
   return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// Planned spend (cost-to-close, recurring kept separate) vs budget per project.
+export type SpendVsBudget = {
+  planned: CostRollup;
+  totalBudget: number;
+  byProject: {
+    name: string;
+    oneTime: number;
+    monthly: number;
+    annual: number;
+    budget: number | null;
+  }[];
+};
+
+export async function getSpendVsBudget(scope: Scope): Promise<SpendVsBudget> {
+  const [projects, requirements] = await Promise.all([
+    prisma.project.findMany({
+      where: projectWhere(scope),
+      orderBy: { name: "asc" },
+      select: { id: true, name: true, budget: true },
+    }),
+    prisma.requirement.findMany({
+      where: scope === "all" ? {} : { gap: { projectId: { in: scope } } },
+      select: {
+        cost: true,
+        costCadence: true,
+        status: true,
+        gap: { select: { projectId: true } },
+      },
+    }),
+  ]);
+  const byProject = projects.map((p) => {
+    const r = rollupCosts(requirements.filter((x) => x.gap.projectId === p.id));
+    return {
+      name: p.name,
+      oneTime: r.oneTime,
+      monthly: r.monthly,
+      annual: r.annual,
+      budget: p.budget,
+    };
+  });
+  return {
+    planned: rollupCosts(requirements),
+    totalBudget: projects.reduce((a, p) => a + (p.budget ?? 0), 0),
+    byProject,
+  };
 }
